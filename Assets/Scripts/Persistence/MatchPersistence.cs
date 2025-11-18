@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEngine;
+using CardGameBuilder.Core;
 
 namespace CardGameBuilder.Persistence
 {

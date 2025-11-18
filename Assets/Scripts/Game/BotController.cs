@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using Unity.Netcode;
+using CardGameBuilder.Core;
 using CardGameBuilder.Net;
 
 namespace CardGameBuilder.Game
