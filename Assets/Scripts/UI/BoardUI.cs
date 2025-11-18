@@ -4,6 +4,7 @@ using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
 using CardGameBuilder.Core;
+using CardGameBuilder.Modding;
 
 namespace CardGameBuilder.UI
 {
@@ -29,6 +30,7 @@ namespace CardGameBuilder.UI
 
         [Header("Game Info Display")]
         [SerializeField] private TextMeshProUGUI gameStateText;
+        [SerializeField] private TextMeshProUGUI gameNameText;
         [SerializeField] private TextMeshProUGUI currentTurnText;
         [SerializeField] private TextMeshProUGUI roundNumberText;
 
@@ -215,6 +217,26 @@ namespace CardGameBuilder.UI
             if (gameStateText != null)
             {
                 gameStateText.text = $"State: {gameManager.CurrentGameState}";
+            }
+
+            // Game name (show custom game name if active)
+            if (gameNameText != null)
+            {
+                if (gameManager.IsCustomGame && gameManager.ActiveCustomGame != null)
+                {
+                    gameNameText.text = $"Game: {gameManager.ActiveCustomGame.gameName}";
+                    gameNameText.color = new Color(0.5f, 1f, 0.5f); // Light green for custom games
+                }
+                else if (gameManager.CurrentGameType != GameType.None)
+                {
+                    gameNameText.text = $"Game: {gameManager.CurrentGameType}";
+                    gameNameText.color = Color.white;
+                }
+                else
+                {
+                    gameNameText.text = "Game: None";
+                    gameNameText.color = Color.gray;
+                }
             }
 
             // Current turn
