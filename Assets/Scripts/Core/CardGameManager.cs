@@ -6,6 +6,7 @@ using UnityEngine;
 using CardGameBuilder.Games;
 using CardGameBuilder.Persistence;
 using CardGameBuilder.Net;
+using CardGameBuilder.Modding;
 
 namespace CardGameBuilder.Core
 {
@@ -79,6 +80,9 @@ namespace CardGameBuilder.Core
         private IGameRules currentGameRules;
         private RulesConfig currentRulesConfig;
 
+        // Custom game support
+        private CustomGameDefinition activeCustomGame;
+
         // Game-specific state
         private List<Card> centerPile;      // For War
         private List<Card> discardPile;     // General discard pile
@@ -94,6 +98,8 @@ namespace CardGameBuilder.Core
         public int ActiveSeatIndex => activeSeatIndex.Value;
         public int RoundNumber => roundNumber.Value;
         public int MaxPlayers => maxPlayers;
+        public CustomGameDefinition ActiveCustomGame => activeCustomGame;
+        public bool IsCustomGame => activeCustomGame != null;
 
         #endregion
 
@@ -191,6 +197,16 @@ namespace CardGameBuilder.Core
                     return i;
             }
             return -1;
+        }
+
+        /// <summary>
+        /// Sets the active custom game definition.
+        /// Should be called before starting a custom game.
+        /// </summary>
+        public void SetCustomGame(CustomGameDefinition customGame)
+        {
+            activeCustomGame = customGame;
+            Debug.Log($"[CardGameManager] Set custom game: {customGame?.gameName ?? "None"}");
         }
 
         /// <summary>
@@ -566,6 +582,14 @@ namespace CardGameBuilder.Core
         /// </summary>
         private IGameRules CreateGameRules(GameType gameType)
         {
+            // Check for custom game first
+            if (activeCustomGame != null && gameType == GameType.None)
+            {
+                Debug.Log($"[CardGameManager] Creating custom game rules: {activeCustomGame.gameName}");
+                return new CustomGameRules(activeCustomGame, this);
+            }
+
+            // Standard games
             return gameType switch
             {
                 GameType.War => new WarRules(),
