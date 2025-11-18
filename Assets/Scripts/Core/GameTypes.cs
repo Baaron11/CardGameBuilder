@@ -287,9 +287,9 @@ namespace CardGameBuilder.Core
     /// Standard 52-card deck with shuffle and deal operations.
     /// Uses deterministic shuffling with seed for network synchronization.
     /// </summary>
-    public class Deck
+    public partial class Deck
     {
-        private List<Card> cards;
+        protected List<Card> cards;
         private System.Random rng;
 
         public int CardsRemaining => cards.Count;
