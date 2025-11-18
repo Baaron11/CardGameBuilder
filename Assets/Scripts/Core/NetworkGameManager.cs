@@ -90,8 +90,10 @@ namespace CardGameBuilder.Core
             Debug.Log("[NetworkGameManager] Initialized and listening for network events");
         }
 
-        private void OnDestroy()
+        protected override void OnDestroy()
         {
+            base.OnDestroy();
+
             // Unsubscribe from events
             if (netManager != null)
             {
