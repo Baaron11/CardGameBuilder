@@ -4,6 +4,8 @@ using System.Linq;
 using Unity.Netcode;
 using UnityEngine;
 using CardGameBuilder.Games;
+using CardGameBuilder.Persistence;
+using CardGameBuilder.Net;
 
 namespace CardGameBuilder.Core
 {
@@ -75,9 +77,11 @@ namespace CardGameBuilder.Core
         private List<PlayerSeat> seats;
         private int shuffleSeed;
         private IGameRules currentGameRules;
+        private RulesConfig currentRulesConfig;
 
         // Game-specific state
         private List<Card> centerPile;      // For War
+        private List<Card> discardPile;     // General discard pile
         private Card leadCard;              // For Hearts trick-taking
         private List<Card> currentTrick;    // For Hearts
 
@@ -100,6 +104,7 @@ namespace CardGameBuilder.Core
             deck = new Deck();
             seats = new List<PlayerSeat>();
             centerPile = new List<Card>();
+            discardPile = new List<Card>();
             currentTrick = new List<Card>();
 
             // Initialize seats
@@ -208,7 +213,7 @@ namespace CardGameBuilder.Core
         /// [ServerRpc] Host starts a new game of the specified type.
         /// </summary>
         [ServerRpc(RequireOwnership = false)]
-        public void StartGameServerRpc(GameType gameType, int seed = -1)
+        public void StartGameServerRpc(GameType gameType, int seed = -1, int winTarget = -1, int handSize = -1)
         {
             if (!IsServer) return;
 
@@ -227,6 +232,12 @@ namespace CardGameBuilder.Core
             currentGameType.Value = gameType;
             gameState.Value = GameState.Starting;
             roundNumber.Value = 1;
+
+            // Setup rules config
+            currentRulesConfig = RulesConfig.Default(gameType);
+            if (winTarget > 0) currentRulesConfig.winTarget = winTarget;
+            if (handSize > 0) currentRulesConfig.initialHandSize = handSize;
+            currentRulesConfig.maxPlayers = maxPlayers;
 
             // Generate or use provided seed
             shuffleSeed = seed == -1 ? UnityEngine.Random.Range(1, 1000000) : seed;
@@ -586,6 +597,306 @@ namespace CardGameBuilder.Core
             return null;
         }
 
+        /// <summary>
+        /// Gets player seat (alias for GetSeat for bot controller compatibility).
+        /// </summary>
+        public PlayerSeat GetPlayerSeat(int index)
+        {
+            return GetSeat(index);
+        }
+
+        /// <summary>
+        /// Gets current trick cards (for Hearts AI).
+        /// </summary>
+        public List<Card> GetCurrentTrick()
+        {
+            return currentTrick ?? new List<Card>();
+        }
+
+        /// <summary>
+        /// Process player action directly (for bot controller).
+        /// </summary>
+        public void ProcessPlayerAction(int seatIndex, PlayerAction action)
+        {
+            if (!IsServer || gameState.Value != GameState.InProgress)
+                return;
+
+            if (currentGameRules != null)
+            {
+                bool success = currentGameRules.ProcessAction(action, seatIndex, seats, deck, this);
+
+                if (success)
+                {
+                    // Update player's hand
+                    UpdatePlayerHandClientRpc(seatIndex, seats[seatIndex].Hand.ToArray());
+
+                    // Check for round/game end
+                    if (currentGameRules.IsRoundOver(seats))
+                    {
+                        EndRound();
+                    }
+                    else
+                    {
+                        // Advance to next player
+                        AdvanceTurn();
+                    }
+                }
+            }
+        }
+
         #endregion
+
+        #region M3 - Persistence & Snapshot
+
+        /// <summary>
+        /// Create a snapshot of the current game state for save/load.
+        /// </summary>
+        public MatchSnapshot CreateSnapshot()
+        {
+            if (!IsServer)
+            {
+                Debug.LogWarning("[CardGameManager] Only server can create snapshots");
+                return null;
+            }
+
+            MatchSnapshot snapshot = new MatchSnapshot(
+                currentGameType.Value,
+                gameState.Value,
+                shuffleSeed,
+                roundNumber.Value,
+                activeSeatIndex.Value,
+                deck,
+                discardPile,
+                seats,
+                currentRulesConfig,
+                SessionManager.Instance.GetRoomName()
+            );
+
+            // Enrich with session data (player IDs, bot flags)
+            SessionManager.Instance.EnrichSnapshot(snapshot);
+
+            Debug.Log($"[CardGameManager] Created snapshot: {snapshot.gameType} Round {snapshot.roundNumber}");
+            return snapshot;
+        }
+
+        /// <summary>
+        /// Restore game state from a snapshot.
+        /// </summary>
+        public bool ApplySnapshot(MatchSnapshot snapshot)
+        {
+            if (!IsServer)
+            {
+                Debug.LogWarning("[CardGameManager] Only server can apply snapshots");
+                return false;
+            }
+
+            if (snapshot == null)
+            {
+                Debug.LogError("[CardGameManager] Cannot apply null snapshot");
+                return false;
+            }
+
+            try
+            {
+                // Restore game state
+                currentGameType.Value = snapshot.gameType;
+                gameState.Value = snapshot.gameState;
+                roundNumber.Value = snapshot.roundNumber;
+                activeSeatIndex.Value = snapshot.activeSeatIndex;
+                shuffleSeed = snapshot.seed;
+                currentRulesConfig = snapshot.rulesConfig ?? RulesConfig.Default(snapshot.gameType);
+
+                // Restore deck
+                deck.Reset();
+                deck.Clear();
+                foreach (int cardId in snapshot.deckCards)
+                {
+                    deck.AddCard(Card.FromId(cardId));
+                }
+
+                // Restore discard pile
+                discardPile.Clear();
+                foreach (int cardId in snapshot.discardPile)
+                {
+                    discardPile.Add(Card.FromId(cardId));
+                }
+
+                // Restore seats
+                for (int i = 0; i < snapshot.seats.Count && i < seats.Count; i++)
+                {
+                    snapshot.seats[i].ApplyToSeat(seats[i]);
+                }
+
+                // Restore game rules
+                currentGameRules = CreateGameRules(snapshot.gameType);
+
+                // Notify clients
+                NotifyGameStartedClientRpc(snapshot.gameType, shuffleSeed);
+
+                // Send hands to players
+                for (int i = 0; i < seats.Count; i++)
+                {
+                    if (seats[i].IsActive)
+                    {
+                        UpdatePlayerHandClientRpc(i, seats[i].Hand.ToArray());
+                    }
+                }
+
+                // Update scores
+                int[] scores = seats.Select(s => s.Score).ToArray();
+                UpdateScoresClientRpc(scores);
+
+                Debug.Log($"[CardGameManager] Applied snapshot: {snapshot.gameType} Round {snapshot.roundNumber}");
+                NotifyGameEventClientRpc(new GameEvent("Game resumed from save!", -1));
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[CardGameManager] Error applying snapshot: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Auto-save current game state.
+        /// </summary>
+        public void AutoSave()
+        {
+            if (!IsServer || gameState.Value == GameState.Waiting)
+                return;
+
+            var snapshot = CreateSnapshot();
+            if (snapshot != null)
+            {
+                MatchPersistence.Instance.AutoSave(snapshot);
+            }
+        }
+
+        #endregion
+
+        #region M3 - Scoring & End Game
+
+        /// <summary>
+        /// Get the current winner (for UI display during game).
+        /// </summary>
+        public int GetCurrentLeader()
+        {
+            bool lowerIsBetter = currentGameType.Value == GameType.Hearts;
+            int leaderSeat = -1;
+            int bestScore = lowerIsBetter ? int.MaxValue : int.MinValue;
+
+            for (int i = 0; i < seats.Count; i++)
+            {
+                if (!seats[i].IsActive) continue;
+
+                bool isBetter = lowerIsBetter
+                    ? seats[i].Score < bestScore
+                    : seats[i].Score > bestScore;
+
+                if (isBetter)
+                {
+                    bestScore = seats[i].Score;
+                    leaderSeat = i;
+                }
+            }
+
+            return leaderSeat;
+        }
+
+        /// <summary>
+        /// Check if win condition is met based on rules config.
+        /// </summary>
+        private bool CheckWinCondition()
+        {
+            if (currentRulesConfig == null)
+                return false;
+
+            bool lowerIsBetter = currentGameType.Value == GameType.Hearts;
+
+            foreach (var seat in seats)
+            {
+                if (!seat.IsActive) continue;
+
+                if (lowerIsBetter)
+                {
+                    // Hearts: game ends if someone reaches point limit
+                    if (seat.Score >= currentRulesConfig.winTarget)
+                        return true;
+                }
+                else
+                {
+                    // War/GoFish: game ends if someone reaches target score
+                    if (seat.Score >= currentRulesConfig.winTarget)
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Save game results to player profiles.
+        /// </summary>
+        [ServerRpc(RequireOwnership = false)]
+        public void SaveGameResultsServerRpc()
+        {
+            if (!IsServer || gameState.Value != GameState.GameOver)
+                return;
+
+            int winnerSeat = GetCurrentLeader();
+            if (winnerSeat == -1)
+                return;
+
+            // Save results for all human players
+            for (int i = 0; i < seats.Count; i++)
+            {
+                if (!seats[i].IsActive)
+                    continue;
+
+                bool isBot = SessionManager.Instance.IsSeatBot(i);
+                if (isBot)
+                    continue;
+
+                bool won = (i == winnerSeat);
+                var session = SessionManager.Instance.GetSessionBySeat(i);
+
+                if (session != null)
+                {
+                    ProfileService.Instance.RecordGameResult(
+                        currentGameType.Value,
+                        seats[i].Score,
+                        won
+                    );
+                }
+            }
+
+            Debug.Log("[CardGameManager] Game results saved to profiles");
+            NotifyGameEventClientRpc(new GameEvent("Results saved to profiles!", -1));
+        }
+
+        #endregion
+    }
+}
+
+// Extension for Deck to support snapshot
+namespace CardGameBuilder.Core
+{
+    public partial class Deck
+    {
+        public void Clear()
+        {
+            cards.Clear();
+        }
+
+        public void AddCard(Card card)
+        {
+            cards.Add(card);
+        }
+
+        public List<Card> GetRemainingCards()
+        {
+            return new List<Card>(cards);
+        }
     }
 }

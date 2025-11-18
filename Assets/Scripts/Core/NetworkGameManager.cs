@@ -1,7 +1,10 @@
+using System;
 using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 using CardGameBuilder.UI;
+using CardGameBuilder.Net;
+using CardGameBuilder.Persistence;
 
 namespace CardGameBuilder.Core
 {
@@ -49,7 +52,9 @@ namespace CardGameBuilder.Core
         #region Private State
 
         private Dictionary<ulong, string> connectedPlayers = new Dictionary<ulong, string>();
+        private Dictionary<ulong, Guid> clientToPlayerId = new Dictionary<ulong, Guid>();
         private NetworkManager netManager;
+        private SessionManager sessionManager;
 
         #endregion
 
@@ -65,17 +70,18 @@ namespace CardGameBuilder.Core
                 return;
             }
 
-            // Find CardGameManager if not assigned
+            // Find managers and UI if not assigned
             if (cardGameManager == null)
             {
                 cardGameManager = FindObjectOfType<CardGameManager>();
             }
 
-            // Find BoardUI if not assigned
             if (boardUI == null)
             {
                 boardUI = FindObjectOfType<BoardUI>();
             }
+
+            sessionManager = SessionManager.Instance;
 
             // Subscribe to network events
             netManager.OnClientConnectedCallback += OnClientConnected;
@@ -100,6 +106,7 @@ namespace CardGameBuilder.Core
 
         /// <summary>
         /// Called when a client connects to the server.
+        /// M3: Supports reconnection via persistent player ID.
         /// </summary>
         private void OnClientConnected(ulong clientId)
         {
@@ -107,35 +114,50 @@ namespace CardGameBuilder.Core
 
             if (!IsServer) return;
 
-            // Generate player name
-            string playerName = $"{defaultPlayerNamePrefix}{clientId}";
-            connectedPlayers[clientId] = playerName;
+            // Request player ID from client for reconnection support
+            RequestPlayerIdClientRpc(clientId);
+        }
 
-            // Assign to a seat
-            if (cardGameManager != null)
+        /// <summary>
+        /// Complete player connection after receiving their player ID
+        /// </summary>
+        private void CompletePlayerConnection(ulong clientId, Guid playerId, string displayName)
+        {
+            if (!IsServer) return;
+
+            connectedPlayers[clientId] = displayName;
+            clientToPlayerId[clientId] = playerId;
+
+            // Register with session manager (handles reconnection)
+            int seatIndex = sessionManager.RegisterPlayer(clientId, playerId, displayName);
+
+            // Assign to card game manager
+            if (cardGameManager != null && seatIndex >= 0)
             {
-                bool assigned = cardGameManager.AssignPlayerToSeat(clientId, playerName);
+                bool assigned = cardGameManager.AssignPlayerToSeat(clientId, displayName);
 
-                if (assigned)
+                if (assigned || seatIndex >= 0)
                 {
-                    Debug.Log($"[NetworkGameManager] Assigned {playerName} to a seat");
-                    NotifyPlayerAssignedClientRpc(clientId, playerName);
+                    Debug.Log($"[NetworkGameManager] {displayName} assigned to seat {seatIndex}");
+                    NotifyPlayerAssignedClientRpc(clientId, displayName, seatIndex);
                 }
                 else
                 {
-                    Debug.LogWarning($"[NetworkGameManager] Failed to assign {playerName} - game may be full");
+                    Debug.LogWarning($"[NetworkGameManager] Failed to assign {displayName} - game may be full");
                 }
             }
 
             // Update UI
             if (boardUI != null)
             {
-                boardUI.AddEventLog($"{playerName} joined the game");
+                string reconnectTag = sessionManager.GetSessionByPlayerId(playerId)?.lastSeenTimestamp > 0 ? " (Reconnected)" : "";
+                boardUI.AddEventLog($"{displayName} joined the game{reconnectTag}");
             }
         }
 
         /// <summary>
         /// Called when a client disconnects from the server.
+        /// M3: Soft disconnect - preserves seat for reconnection.
         /// </summary>
         private void OnClientDisconnected(ulong clientId)
         {
@@ -147,7 +169,40 @@ namespace CardGameBuilder.Core
                 ? connectedPlayers[clientId]
                 : $"Client{clientId}";
 
-            // Remove from seat
+            // Notify session manager (soft disconnect - allows reconnection)
+            sessionManager.OnPlayerDisconnected(clientId);
+
+            // DON'T remove from seat immediately - allow reconnection
+            // Only mark as disconnected in UI
+
+            // Update UI
+            if (boardUI != null)
+            {
+                boardUI.AddEventLog($"{playerName} disconnected (seat reserved for 5 min)");
+            }
+
+            Debug.Log($"[NetworkGameManager] {playerName} disconnected - seat reserved");
+        }
+
+        /// <summary>
+        /// Permanently remove a player (timeout or kick)
+        /// </summary>
+        public void RemovePlayer(ulong clientId)
+        {
+            if (!IsServer) return;
+
+            string playerName = connectedPlayers.ContainsKey(clientId)
+                ? connectedPlayers[clientId]
+                : $"Client{clientId}";
+
+            // Remove from session manager
+            if (clientToPlayerId.TryGetValue(clientId, out Guid playerId))
+            {
+                sessionManager.RemovePlayer(playerId);
+                clientToPlayerId.Remove(clientId);
+            }
+
+            // Remove from card game manager
             if (cardGameManager != null)
             {
                 cardGameManager.RemovePlayerFromSeat(clientId);
@@ -159,32 +214,55 @@ namespace CardGameBuilder.Core
             // Update UI
             if (boardUI != null)
             {
-                boardUI.AddEventLog($"{playerName} left the game");
+                boardUI.AddEventLog($"{playerName} permanently removed");
             }
 
-            Debug.Log($"[NetworkGameManager] {playerName} removed from game");
+            Debug.Log($"[NetworkGameManager] {playerName} permanently removed");
         }
 
         #endregion
 
-        #region ClientRpc
+        #region ClientRpc / ServerRpc
+
+        /// <summary>
+        /// [ClientRpc] Request player ID from connecting client
+        /// </summary>
+        [ClientRpc]
+        private void RequestPlayerIdClientRpc(ulong targetClientId)
+        {
+            // Only process if this is for the local client
+            if (NetworkManager.Singleton.LocalClientId != targetClientId) return;
+
+            // Send our player ID and display name to server
+            var profile = ProfileService.Instance.GetProfile();
+            SendPlayerIdServerRpc(profile.PlayerId, profile.displayName);
+        }
+
+        /// <summary>
+        /// [ServerRpc] Receive player ID from client for reconnection
+        /// </summary>
+        [ServerRpc(RequireOwnership = false)]
+        private void SendPlayerIdServerRpc(Guid playerId, string displayName, ServerRpcParams serverRpcParams = default)
+        {
+            ulong clientId = serverRpcParams.Receive.SenderClientId;
+            CompletePlayerConnection(clientId, playerId, displayName);
+        }
 
         /// <summary>
         /// [ClientRpc] Notifies a client that they've been assigned to a seat.
         /// </summary>
         [ClientRpc]
-        private void NotifyPlayerAssignedClientRpc(ulong clientId, string playerName)
+        private void NotifyPlayerAssignedClientRpc(ulong clientId, string playerName, int seatIndex)
         {
             // Only process if this is for the local client
             if (NetworkManager.Singleton.LocalClientId != clientId) return;
 
-            Debug.Log($"[NetworkGameManager] You are {playerName}");
+            Debug.Log($"[NetworkGameManager] You are {playerName} at seat {seatIndex}");
 
             // Update local UI
             ControllerUI controllerUI = FindObjectOfType<ControllerUI>();
-            if (controllerUI != null && cardGameManager != null)
+            if (controllerUI != null)
             {
-                int seatIndex = cardGameManager.GetSeatIndexForClient(clientId);
                 controllerUI.SetSeatIndex(seatIndex);
             }
         }
