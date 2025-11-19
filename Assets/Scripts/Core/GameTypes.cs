@@ -26,8 +26,9 @@ namespace CardGameBuilder.Core
     /// <summary>
     /// Card suits in a standard 52-card deck.
     /// </summary>
-    public enum Suit
+    public enum Suit : byte
     {
+        None = 255,
         Hearts = 0,
         Diamonds = 1,
         Clubs = 2,

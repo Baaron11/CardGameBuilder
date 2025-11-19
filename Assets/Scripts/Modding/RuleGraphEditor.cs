@@ -392,7 +392,7 @@ namespace CardGameBuilder.Modding
             if (inputField != null)
             {
                 inputField.text = value;
-                inputField.onEndEdit.AddListener(onValueChanged);
+                inputField.onEndEdit.AddListener(new UnityEngine.Events.UnityAction<string>(onValueChanged));
             }
         }
 

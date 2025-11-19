@@ -73,12 +73,12 @@ namespace CardGameBuilder.Core
             // Find managers and UI if not assigned
             if (cardGameManager == null)
             {
-                cardGameManager = FindObjectOfType<CardGameManager>();
+                cardGameManager = Object.FindFirstObjectByType<CardGameManager>();
             }
 
             if (boardUI == null)
             {
-                boardUI = FindObjectOfType<BoardUI>();
+                boardUI = Object.FindFirstObjectByType<BoardUI>();
             }
 
             sessionManager = SessionManager.Instance;
@@ -264,7 +264,7 @@ namespace CardGameBuilder.Core
             Debug.Log($"[NetworkGameManager] You are {playerName} at seat {seatIndex}");
 
             // Update local UI
-            ControllerUI controllerUI = FindObjectOfType<ControllerUI>();
+            ControllerUI controllerUI = Object.FindFirstObjectByType<ControllerUI>();
             if (controllerUI != null)
             {
                 controllerUI.SetSeatIndex(seatIndex);

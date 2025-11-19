@@ -93,6 +93,11 @@ namespace CardGameBuilder.Core
 
         #region Public Properties
 
+        // Public NetworkVariable accessors for bot controller
+        public NetworkVariable<GameState> State => gameState;
+        public NetworkVariable<int> TurnSeat => activeSeatIndex;
+        public NetworkVariable<GameType> ActiveGame => currentGameType;
+
         public GameState CurrentGameState => gameState.Value;
         public GameType CurrentGameType => currentGameType.Value;
         public int ActiveSeatIndex => activeSeatIndex.Value;
@@ -672,6 +677,14 @@ namespace CardGameBuilder.Core
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Notify game event (stub for custom game rules integration).
+        /// </summary>
+        public void NotifyGameEvent(string eventName, string payload = null)
+        {
+            // TODO: Later route to HUD / log / ClientRpc. For now, no-op to satisfy references.
         }
 
         #endregion
