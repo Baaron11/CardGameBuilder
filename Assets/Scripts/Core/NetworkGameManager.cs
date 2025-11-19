@@ -5,6 +5,7 @@ using UnityEngine;
 using CardGameBuilder.UI;
 using CardGameBuilder.Net;
 using CardGameBuilder.Persistence;
+using CardGameBuilder.Core.Net;
 using UObject = UnityEngine.Object;
 
 namespace CardGameBuilder.Core
@@ -238,7 +239,7 @@ namespace CardGameBuilder.Core
 
             // Send our player ID and display name to server
             var profile = ProfileService.Instance.GetProfile();
-            SendPlayerIdServerRpc(profile.PlayerId, profile.displayName);
+            SendPlayerIdServerRpc(GuidSerializable.From(profile.PlayerId), profile.displayName);
         }
 
         /// <summary>
@@ -246,10 +247,11 @@ namespace CardGameBuilder.Core
         /// </summary>
 #pragma warning disable CS0618
         [ServerRpc(RequireOwnership = false)]
-        private void SendPlayerIdServerRpc(Guid playerId, string displayName, ServerRpcParams serverRpcParams = default)
+        private void SendPlayerIdServerRpc(GuidSerializable playerId, string displayName, ServerRpcParams serverRpcParams = default)
         {
+            var guid = playerId.ToGuid();
             ulong clientId = serverRpcParams.Receive.SenderClientId;
-            CompletePlayerConnection(clientId, playerId, displayName);
+            CompletePlayerConnection(clientId, guid, displayName);
         }
 #pragma warning restore CS0618
 
