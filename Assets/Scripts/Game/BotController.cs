@@ -59,11 +59,11 @@ namespace CardGameBuilder.Game
             if (_gameManager == null || _isProcessing)
                 return;
 
-            if (_gameManager.gameState.Value != GameState.InProgress)
+            if (_gameManager.State.Value != GameState.InProgress)
                 return;
 
             // Check if current turn is a bot
-            int currentSeat = _gameManager.activeSeatIndex.Value;
+            int currentSeat = _gameManager.TurnSeat.Value;
             if (SessionManager.Instance.IsSeatBot(currentSeat))
             {
                 StartCoroutine(ProcessBotTurn(currentSeat));
@@ -82,7 +82,7 @@ namespace CardGameBuilder.Game
             yield return new WaitForSeconds(thinkTime);
 
             // Ensure it's still the bot's turn
-            if (_gameManager.activeSeatIndex.Value != seatIndex)
+            if (_gameManager.TurnSeat.Value != seatIndex)
             {
                 _isProcessing = false;
                 yield break;
@@ -91,7 +91,7 @@ namespace CardGameBuilder.Game
             // Make decision based on current game type
             PlayerAction action = DecideBotAction(seatIndex);
 
-            if (action != null)
+            if (action.Type != ActionType.None)
             {
                 // Execute the action through the game manager
                 _gameManager.ProcessPlayerAction(seatIndex, action);
@@ -109,7 +109,7 @@ namespace CardGameBuilder.Game
         /// </summary>
         private PlayerAction DecideBotAction(int seatIndex)
         {
-            GameType gameType = _gameManager.currentGameType.Value;
+            GameType gameType = _gameManager.ActiveGame.Value;
 
             switch (gameType)
             {
@@ -124,7 +124,7 @@ namespace CardGameBuilder.Game
 
                 default:
                     Debug.LogWarning($"[BotController] No AI for game type: {gameType}");
-                    return null;
+                    return new PlayerAction { Type = ActionType.None };
             }
         }
 
@@ -137,7 +137,7 @@ namespace CardGameBuilder.Game
         {
             var seat = _gameManager.GetPlayerSeat(seatIndex);
             if (seat == null || seat.Hand.Count == 0)
-                return null;
+                return new PlayerAction { Type = ActionType.None };
 
             // Flip the first card in hand
             Card cardToFlip = seat.Hand[0];
@@ -159,7 +159,7 @@ namespace CardGameBuilder.Game
         {
             var seat = _gameManager.GetPlayerSeat(seatIndex);
             if (seat == null)
-                return null;
+                return new PlayerAction { Type = ActionType.None };
 
             // If hand is empty, draw a card
             if (seat.Hand.Count == 0)
@@ -216,9 +216,9 @@ namespace CardGameBuilder.Game
         {
             var seat = _gameManager.GetPlayerSeat(seatIndex);
             if (seat == null || seat.Hand.Count == 0)
-                return null;
+                return new PlayerAction { Type = ActionType.None };
 
-            Card cardToPlay = null;
+            Card? cardToPlay = null;
 
             // Get current trick's lead suit (if any)
             var currentTrick = _gameManager.GetCurrentTrick();
@@ -246,7 +246,7 @@ namespace CardGameBuilder.Game
                 cardToPlay = ChooseLeadCard(seat.Hand);
             }
 
-            if (cardToPlay == null)
+            if (!cardToPlay.HasValue)
             {
                 // Fallback: play first card
                 cardToPlay = seat.Hand[0];
@@ -255,14 +255,14 @@ namespace CardGameBuilder.Game
             return new PlayerAction
             {
                 Type = ActionType.Play,
-                Card = cardToPlay
+                Card = cardToPlay.Value
             };
         }
 
         /// <summary>
         /// Choose best card to lead in Hearts (avoid hearts, play safe suits)
         /// </summary>
-        private Card ChooseLeadCard(List<Card> hand)
+        private Card? ChooseLeadCard(List<Card> hand)
         {
             // Prefer non-hearts, low cards
             var nonHearts = hand.Where(c => c.Suit != Suit.Hearts).OrderBy(c => c.Rank).ToList();
@@ -276,7 +276,7 @@ namespace CardGameBuilder.Game
         /// <summary>
         /// Choose card to discard in Hearts (dump points)
         /// </summary>
-        private Card ChooseDiscardCard(List<Card> hand)
+        private Card? ChooseDiscardCard(List<Card> hand)
         {
             // Prioritize Queen of Spades (13 pts)
             var queenOfSpades = hand.FirstOrDefault(c => c.Suit == Suit.Spades && c.Rank == Rank.Queen);
