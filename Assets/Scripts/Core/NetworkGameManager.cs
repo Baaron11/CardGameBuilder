@@ -5,6 +5,7 @@ using UnityEngine;
 using CardGameBuilder.UI;
 using CardGameBuilder.Net;
 using CardGameBuilder.Persistence;
+using UObject = UnityEngine.Object;
 
 namespace CardGameBuilder.Core
 {
@@ -73,12 +74,12 @@ namespace CardGameBuilder.Core
             // Find managers and UI if not assigned
             if (cardGameManager == null)
             {
-                cardGameManager = Object.FindFirstObjectByType<CardGameManager>();
+                cardGameManager = UObject.FindFirstObjectByType<CardGameManager>();
             }
 
             if (boardUI == null)
             {
-                boardUI = Object.FindFirstObjectByType<BoardUI>();
+                boardUI = UObject.FindFirstObjectByType<BoardUI>();
             }
 
             sessionManager = SessionManager.Instance;
@@ -264,7 +265,7 @@ namespace CardGameBuilder.Core
             Debug.Log($"[NetworkGameManager] You are {playerName} at seat {seatIndex}");
 
             // Update local UI
-            ControllerUI controllerUI = Object.FindFirstObjectByType<ControllerUI>();
+            ControllerUI controllerUI = UObject.FindFirstObjectByType<ControllerUI>();
             if (controllerUI != null)
             {
                 controllerUI.SetSeatIndex(seatIndex);

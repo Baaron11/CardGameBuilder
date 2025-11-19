@@ -326,7 +326,6 @@ namespace CardGameBuilder.Game
         /// </summary>
         public void SetBotProcessing(bool enabled)
         {
-            enabled = enabled;
             Debug.Log($"[BotController] Bot processing: {enabled}");
         }
 
