@@ -228,6 +228,7 @@ namespace CardGameBuilder.Core
         /// <summary>
         /// [ServerRpc] Host starts a new game of the specified type.
         /// </summary>
+#pragma warning disable CS0618
         [ServerRpc(RequireOwnership = false)]
         public void StartGameServerRpc(GameType gameType, int seed = -1, int winTarget = -1, int handSize = -1)
         {
@@ -299,10 +300,12 @@ namespace CardGameBuilder.Core
             gameState.Value = GameState.InProgress;
             NotifyGameEventClientRpc(new GameEvent($"{gameType} started! {seats[activeSeatIndex.Value].PlayerName}'s turn.", activeSeatIndex.Value));
         }
+#pragma warning restore CS0618
 
         /// <summary>
         /// [ServerRpc] Player performs an action.
         /// </summary>
+#pragma warning disable CS0618
         [ServerRpc(RequireOwnership = false)]
         public void PerformActionServerRpc(PlayerAction action, ServerRpcParams serverRpcParams = default)
         {
@@ -349,10 +352,12 @@ namespace CardGameBuilder.Core
                 }
             }
         }
+#pragma warning restore CS0618
 
         /// <summary>
         /// [ServerRpc] Player draws a card.
         /// </summary>
+#pragma warning disable CS0618
         [ServerRpc(RequireOwnership = false)]
         public void DrawCardServerRpc(ServerRpcParams serverRpcParams = default)
         {
@@ -374,6 +379,7 @@ namespace CardGameBuilder.Core
             UpdatePlayerHandClientRpc(seatIndex, seats[seatIndex].Hand.ToArray());
             NotifyGameEventClientRpc(new GameEvent($"{seats[seatIndex].PlayerName} drew a card", seatIndex));
         }
+#pragma warning restore CS0618
 
         #endregion
 
@@ -862,6 +868,7 @@ namespace CardGameBuilder.Core
         /// <summary>
         /// Save game results to player profiles.
         /// </summary>
+#pragma warning disable CS0618
         [ServerRpc(RequireOwnership = false)]
         public void SaveGameResultsServerRpc()
         {
@@ -898,6 +905,7 @@ namespace CardGameBuilder.Core
             Debug.Log("[CardGameManager] Game results saved to profiles");
             NotifyGameEventClientRpc(new GameEvent("Results saved to profiles!", -1));
         }
+#pragma warning restore CS0618
 
         #endregion
     }
