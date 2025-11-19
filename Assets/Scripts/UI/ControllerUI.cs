@@ -231,6 +231,7 @@ namespace CardGameBuilder.UI
                         }
                     }
                     UpdateTargetPlayerDropdown();
+                    UpdateRankDropdown();
                     break;
 
                 case GameType.Hearts:
@@ -275,6 +276,35 @@ namespace CardGameBuilder.UI
             {
                 targetPlayerDropdown.AddOptions(new List<string> { "No other players" });
                 targetPlayerDropdown.interactable = false;
+            }
+        }
+
+        /// <summary>
+        /// Updates the rank dropdown for Go Fish with only ranks in hand.
+        /// </summary>
+        private void UpdateRankDropdown()
+        {
+            if (targetRankDropdown == null) return;
+
+            targetRankDropdown.ClearOptions();
+
+            // Get unique ranks in current hand
+            var ranksInHand = CardGameBuilder.Game.GoFishRules.GetRanksInHand(currentHand);
+
+            if (ranksInHand.Count > 0)
+            {
+                List<string> rankOptions = new List<string>();
+                foreach (var rank in ranksInHand)
+                {
+                    rankOptions.Add(rank.ToString());
+                }
+                targetRankDropdown.AddOptions(rankOptions);
+                targetRankDropdown.interactable = true;
+            }
+            else
+            {
+                targetRankDropdown.AddOptions(new List<string> { "No cards" });
+                targetRankDropdown.interactable = false;
             }
         }
 
@@ -332,6 +362,12 @@ namespace CardGameBuilder.UI
             }
 
             RefreshHandDisplay();
+
+            // Update rank dropdown if playing Go Fish
+            if (gameManager != null && gameManager.CurrentGameType == GameType.GoFish)
+            {
+                UpdateRankDropdown();
+            }
         }
 
         /// <summary>
@@ -435,11 +471,18 @@ namespace CardGameBuilder.UI
 
             int targetSeat = otherSeatIndices[targetPlayerDropdown.value];
 
-            // Get target rank (1-13 corresponding to Ace-King)
-            Rank targetRank = (Rank)(targetRankDropdown.value + 1);
+            // Get target rank from ranks in hand
+            var ranksInHand = CardGameBuilder.Game.GoFishRules.GetRanksInHand(currentHand);
+            if (targetRankDropdown.value < 0 || targetRankDropdown.value >= ranksInHand.Count)
+            {
+                UpdateStatusText("Select a valid rank!");
+                return;
+            }
 
-            PlayerAction action = new PlayerAction(ActionType.Ask, default, targetSeat, targetRank);
-            gameManager.PerformActionServerRpc(action);
+            Rank targetRank = ranksInHand[targetRankDropdown.value];
+
+            // Use new RequestAskServerRpc for Go Fish
+            gameManager.RequestAskServerRpc(targetSeat, (byte)targetRank);
 
             UpdateStatusText($"Asking for {targetRank}s...");
         }

@@ -34,6 +34,10 @@ namespace CardGameBuilder.UI
         [SerializeField] private TextMeshProUGUI currentTurnText;
         [SerializeField] private TextMeshProUGUI roundNumberText;
 
+        [Header("Go Fish Display")]
+        [SerializeField] private TextMeshProUGUI deckCountText;
+        [SerializeField] private TextMeshProUGUI lastActionText;
+
         [Header("Player Display")]
         [SerializeField] private Transform playerListContainer;
         [SerializeField] private GameObject playerInfoPrefab; // Prefab with: PlayerName, Score, HandCount texts
@@ -112,6 +116,7 @@ namespace CardGameBuilder.UI
             // Update UI every frame based on current network state
             UpdateGameStateDisplay();
             UpdatePlayerDisplay();
+            UpdateGoFishDisplay();
         }
 
         #endregion
@@ -324,6 +329,39 @@ namespace CardGameBuilder.UI
 
         #endregion
 
+        #region Go Fish Display
+
+        /// <summary>
+        /// Updates Go Fish specific information (deck count, last action).
+        /// </summary>
+        private void UpdateGoFishDisplay()
+        {
+            if (gameManager == null) return;
+
+            bool isGoFish = gameManager.CurrentGameType == GameType.GoFish;
+
+            // Show/hide Go Fish elements
+            if (deckCountText != null)
+            {
+                deckCountText.gameObject.SetActive(isGoFish);
+                if (isGoFish)
+                {
+                    deckCountText.text = $"Deck: {gameManager.DeckCount} cards";
+                }
+            }
+
+            if (lastActionText != null)
+            {
+                lastActionText.gameObject.SetActive(isGoFish);
+                if (isGoFish && !string.IsNullOrEmpty(gameManager.LastAction))
+                {
+                    lastActionText.text = $"Last: {gameManager.LastAction}";
+                }
+            }
+        }
+
+        #endregion
+
         #region Event Log
 
         /// <summary>
@@ -415,12 +453,37 @@ namespace CardGameBuilder.UI
 
             if (scoreText != null)
             {
-                scoreText.text = $"Score: {seat.Score}";
+                // For Go Fish, show books instead of score
+                var gameManager = CardGameManager.Instance;
+                if (gameManager != null && gameManager.CurrentGameType == GameType.GoFish)
+                {
+                    int books = seat.Score; // Score is book count for Go Fish
+                    scoreText.text = $"Books: {books}";
+                }
+                else
+                {
+                    scoreText.text = $"Score: {seat.Score}";
+                }
             }
 
             if (handCountText != null)
             {
-                handCountText.text = $"Cards: {seat.Hand.Count}";
+                // For Go Fish, get hand count from server hands if on server
+                // Otherwise just show the count from seat
+                var gameManager = CardGameManager.Instance;
+                int handCount = 0;
+
+                if (gameManager != null && gameManager.CurrentGameType == GameType.GoFish)
+                {
+                    // For Go Fish, hands are stored server-side, so we show generic count
+                    handCount = seat.Hand.Count;
+                }
+                else
+                {
+                    handCount = seat.Hand.Count;
+                }
+
+                handCountText.text = $"Cards: {handCount}";
             }
 
             if (backgroundImage != null)
