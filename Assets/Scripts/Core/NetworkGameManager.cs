@@ -90,7 +90,7 @@ namespace CardGameBuilder.Core
             Debug.Log("[NetworkGameManager] Initialized and listening for network events");
         }
 
-        protected override void OnDestroy()
+        public override void OnDestroy()
         {
             base.OnDestroy();
 
@@ -243,12 +243,14 @@ namespace CardGameBuilder.Core
         /// <summary>
         /// [ServerRpc] Receive player ID from client for reconnection
         /// </summary>
+#pragma warning disable CS0618
         [ServerRpc(RequireOwnership = false)]
         private void SendPlayerIdServerRpc(Guid playerId, string displayName, ServerRpcParams serverRpcParams = default)
         {
             ulong clientId = serverRpcParams.Receive.SenderClientId;
             CompletePlayerConnection(clientId, playerId, displayName);
         }
+#pragma warning restore CS0618
 
         /// <summary>
         /// [ClientRpc] Notifies a client that they've been assigned to a seat.
