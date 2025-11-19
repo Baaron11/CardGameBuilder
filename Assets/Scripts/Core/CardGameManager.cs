@@ -34,6 +34,9 @@ namespace CardGameBuilder.Core
                 return;
             }
             Instance = this;
+
+            // Initialize NetworkLists
+            booksPerSeat = new NetworkList<ushort>();
         }
 
         #endregion
@@ -69,6 +72,20 @@ namespace CardGameBuilder.Core
             NetworkVariableReadPermission.Everyone,
             NetworkVariableWritePermission.Server);
 
+        // Go Fish specific network variables
+        private NetworkVariable<int> deckCount = new NetworkVariable<int>(
+            52,
+            NetworkVariableReadPermission.Everyone,
+            NetworkVariableWritePermission.Server);
+
+        private NetworkList<ushort> booksPerSeat;
+
+        private NetworkVariable<Unity.Collections.FixedString128Bytes> lastAction =
+            new NetworkVariable<Unity.Collections.FixedString128Bytes>(
+                "",
+                NetworkVariableReadPermission.Everyone,
+                NetworkVariableWritePermission.Server);
+
         #endregion
 
         #region Server-Side State
@@ -89,6 +106,9 @@ namespace CardGameBuilder.Core
         private Card leadCard;              // For Hearts trick-taking
         private List<Card> currentTrick;    // For Hearts
 
+        // Go Fish specific server-side state
+        private Dictionary<int, List<Card>> serverHands; // Authoritative hands for Go Fish
+
         #endregion
 
         #region Public Properties
@@ -106,6 +126,11 @@ namespace CardGameBuilder.Core
         public CustomGameDefinition ActiveCustomGame => activeCustomGame;
         public bool IsCustomGame => activeCustomGame != null;
 
+        // Go Fish specific properties
+        public int DeckCount => deckCount.Value;
+        public NetworkList<ushort> BooksPerSeat => booksPerSeat;
+        public string LastAction => lastAction.Value.ToString();
+
         #endregion
 
         #region Unity Lifecycle
@@ -117,11 +142,13 @@ namespace CardGameBuilder.Core
             centerPile = new List<Card>();
             discardPile = new List<Card>();
             currentTrick = new List<Card>();
+            serverHands = new Dictionary<int, List<Card>>();
 
             // Initialize seats
             for (int i = 0; i < maxPlayers; i++)
             {
                 seats.Add(new PlayerSeat(i));
+                serverHands[i] = new List<Card>();
             }
         }
 
@@ -283,27 +310,73 @@ namespace CardGameBuilder.Core
             deck.Reset();
             deck.Shuffle(shuffleSeed);
 
-            // Deal initial cards
-            currentGameRules.DealInitialCards(deck, seats);
-
-            // Determine first player
-            activeSeatIndex.Value = currentGameRules.GetFirstPlayer(seats);
-
-            // Notify clients
-            NotifyGameStartedClientRpc(gameType, shuffleSeed);
-
-            // Send initial hands to each player
-            for (int i = 0; i < seats.Count; i++)
+            // Initialize Go Fish specific state
+            if (gameType == GameType.GoFish)
             {
-                if (seats[i].IsActive)
+                // Clear and initialize books
+                booksPerSeat.Clear();
+                for (int i = 0; i < maxPlayers; i++)
                 {
-                    UpdatePlayerHandClientRpc(i, seats[i].Hand.ToArray());
+                    booksPerSeat.Add(0);
+                    serverHands[i] = new List<Card>();
                 }
-            }
 
-            // Start gameplay
-            gameState.Value = GameState.InProgress;
-            NotifyGameEventClientRpc(new GameEvent($"{gameType} started! {seats[activeSeatIndex.Value].PlayerName}'s turn.", activeSeatIndex.Value));
+                // Deal using server-side hands
+                List<int> activeSeats = new List<int>();
+                for (int i = 0; i < seats.Count; i++)
+                {
+                    if (seats[i].IsActive)
+                        activeSeats.Add(i);
+                }
+
+                CardGameBuilder.Game.GoFishRules.DealInitialHands(deck, serverHands, activeSeats);
+                deckCount.Value = deck.CardsRemaining;
+                lastAction.Value = "Game started!";
+
+                // Determine first player
+                activeSeatIndex.Value = activeSeats.Count > 0 ? activeSeats[0] : 0;
+
+                // Notify clients
+                NotifyGameStartedClientRpc(gameType, shuffleSeed);
+
+                // Send initial hands to each player (targeted)
+                for (int i = 0; i < seats.Count; i++)
+                {
+                    if (seats[i].IsActive)
+                    {
+                        SyncHandToClient(i);
+                    }
+                }
+
+                // Start gameplay
+                gameState.Value = GameState.InProgress;
+                NotifyGameEventClientRpc(new GameEvent($"Go Fish started! {seats[activeSeatIndex.Value].PlayerName}'s turn.", activeSeatIndex.Value));
+            }
+            else
+            {
+                // Standard game setup for War/Hearts
+                // Deal initial cards
+                currentGameRules.DealInitialCards(deck, seats);
+
+                // Determine first player
+                activeSeatIndex.Value = currentGameRules.GetFirstPlayer(seats);
+
+                // Notify clients
+                NotifyGameStartedClientRpc(gameType, shuffleSeed);
+
+                // Send initial hands to each player
+                for (int i = 0; i < seats.Count; i++)
+                {
+                    if (seats[i].IsActive)
+                    {
+                        UpdatePlayerHandClientRpc(i, seats[i].Hand.ToArray());
+                    }
+                }
+
+                // Start gameplay
+                gameState.Value = GameState.InProgress;
+                NotifyGameEventClientRpc(new GameEvent($"{gameType} started! {seats[activeSeatIndex.Value].PlayerName}'s turn.", activeSeatIndex.Value));
+            }
         }
 #pragma warning restore CS0618
 
@@ -386,6 +459,131 @@ namespace CardGameBuilder.Core
         }
 #pragma warning restore CS0618
 
+        /// <summary>
+        /// [ServerRpc] Go Fish - Player asks another player for a rank.
+        /// </summary>
+#pragma warning disable CS0618
+        [ServerRpc(RequireOwnership = false)]
+        public void RequestAskServerRpc(int targetSeat, byte rankValue, ServerRpcParams rpcParams = default)
+        {
+            if (!IsServer || currentGameType.Value != GameType.GoFish || gameState.Value != GameState.InProgress)
+                return;
+
+            ulong clientId = rpcParams.Receive.SenderClientId;
+            int askerSeat = GetSeatIndexForClient(clientId);
+
+            if (askerSeat == -1)
+            {
+                Debug.LogWarning($"[CardGameManager] Ask from unknown client {clientId}");
+                return;
+            }
+
+            // Validate it's this player's turn
+            if (askerSeat != activeSeatIndex.Value)
+            {
+                Debug.LogWarning($"[CardGameManager] Player {askerSeat} tried to ask out of turn");
+                NotifyGameEventClientRpc(new GameEvent("It's not your turn!", askerSeat));
+                return;
+            }
+
+            Rank rank = (Rank)rankValue;
+
+            // Validate using pure logic helper
+            if (!CardGameBuilder.Game.GoFishRules.CanAsk(askerSeat, targetSeat, rank, serverHands[askerSeat]))
+            {
+                NotifyGameEventClientRpc(new GameEvent("You must have the rank you're asking for!", askerSeat));
+                return;
+            }
+
+            // Validate target seat
+            if (targetSeat < 0 || targetSeat >= seats.Count || !seats[targetSeat].IsActive)
+            {
+                NotifyGameEventClientRpc(new GameEvent("Invalid target player!", askerSeat));
+                return;
+            }
+
+            // Get active seats and player names
+            List<int> activeSeats = new List<int>();
+            string[] playerNames = new string[maxPlayers];
+            for (int i = 0; i < seats.Count; i++)
+            {
+                if (seats[i].IsActive)
+                {
+                    activeSeats.Add(i);
+                    playerNames[i] = seats[i].PlayerName;
+                }
+            }
+
+            // Convert booksPerSeat to array
+            ushort[] bookBitmasks = new ushort[maxPlayers];
+            for (int i = 0; i < booksPerSeat.Count && i < maxPlayers; i++)
+            {
+                bookBitmasks[i] = booksPerSeat[i];
+            }
+
+            // Execute the ask using pure logic
+            var result = CardGameBuilder.Game.GoFishRules.ResolveAsk(
+                serverHands,
+                deck,
+                bookBitmasks,
+                askerSeat,
+                targetSeat,
+                rank,
+                activeSeats,
+                playerNames
+            );
+
+            // Update booksPerSeat from modified bitmasks
+            for (int i = 0; i < maxPlayers; i++)
+            {
+                if (i < booksPerSeat.Count)
+                {
+                    booksPerSeat[i] = bookBitmasks[i];
+                }
+                else
+                {
+                    booksPerSeat.Add(bookBitmasks[i]);
+                }
+            }
+
+            // Update scores based on books
+            for (int i = 0; i < seats.Count; i++)
+            {
+                if (seats[i].IsActive && i < bookBitmasks.Length)
+                {
+                    seats[i].Score = CardGameBuilder.Game.GoFishRules.CountBooks(bookBitmasks[i]);
+                }
+            }
+
+            // Update deck count
+            deckCount.Value = deck.CardsRemaining;
+
+            // Update last action
+            lastAction.Value = result.actionLog;
+
+            // Send updated hands to involved players
+            SyncHandToClient(askerSeat);
+            SyncHandToClient(targetSeat);
+
+            // Broadcast event
+            NotifyGameEventClientRpc(new GameEvent(result.actionLog, askerSeat));
+
+            // Update scores
+            UpdateScoresClientRpc(seats.Select(s => s.Score).ToArray());
+
+            // Update turn
+            activeSeatIndex.Value = result.nextTurnSeat;
+
+            // Check for game over
+            if (CardGameBuilder.Game.GoFishRules.IsGameOver(serverHands, deck.CardsRemaining, bookBitmasks))
+            {
+                EndGoFishGame(bookBitmasks, activeSeats);
+            }
+
+            Debug.Log($"[CardGameManager] Ask processed: {result.actionLog}");
+        }
+#pragma warning restore CS0618
+
         #endregion
 
         #region ClientRpc - Notifications
@@ -408,6 +606,17 @@ namespace CardGameBuilder.Core
         private void UpdatePlayerHandClientRpc(int seatIndex, Card[] hand)
         {
             Debug.Log($"[CardGameManager] Hand update for seat {seatIndex}: {hand.Length} cards");
+            // ControllerUI will listen and update display
+        }
+
+        /// <summary>
+        /// [ClientRpc] Syncs a hand to a specific client (Go Fish).
+        /// Only the target client receives this.
+        /// </summary>
+        [ClientRpc]
+        private void SyncHandClientRpc(Card[] myHand, ClientRpcParams clientRpcParams = default)
+        {
+            Debug.Log($"[CardGameManager] Hand sync received: {myHand.Length} cards");
             // ControllerUI will listen and update display
         }
 
@@ -608,6 +817,74 @@ namespace CardGameBuilder.Core
                 GameType.Hearts => new HeartsRules(),
                 _ => null
             };
+        }
+
+        /// <summary>
+        /// [Go Fish] Syncs a player's hand to their client only.
+        /// </summary>
+        private void SyncHandToClient(int seatIndex)
+        {
+            if (!IsServer || seatIndex < 0 || seatIndex >= seats.Count)
+                return;
+
+            if (!seats[seatIndex].IsActive)
+                return;
+
+            ulong targetClientId = seats[seatIndex].ClientId;
+            Card[] hand = serverHands[seatIndex].ToArray();
+
+            // Send to specific client
+            ClientRpcParams clientRpcParams = new ClientRpcParams
+            {
+                Send = new ClientRpcSendParams
+                {
+                    TargetClientIds = new ulong[] { targetClientId }
+                }
+            };
+
+            SyncHandClientRpc(hand, clientRpcParams);
+            Debug.Log($"[CardGameManager] Synced {hand.Length} cards to seat {seatIndex} (client {targetClientId})");
+        }
+
+        /// <summary>
+        /// [Go Fish] Ends the Go Fish game and declares winner(s).
+        /// </summary>
+        private void EndGoFishGame(ushort[] bookBitmasks, List<int> activeSeats)
+        {
+            if (!IsServer)
+                return;
+
+            gameState.Value = GameState.GameOver;
+
+            List<int> winners = CardGameBuilder.Game.GoFishRules.GetWinners(bookBitmasks, activeSeats);
+
+            if (winners.Count == 1)
+            {
+                int winnerSeat = winners[0];
+                int winnerBooks = CardGameBuilder.Game.GoFishRules.CountBooks(bookBitmasks[winnerSeat]);
+                string winnerName = seats[winnerSeat].PlayerName;
+
+                NotifyGameEventClientRpc(new GameEvent(
+                    $"Game Over! {winnerName} wins with {winnerBooks} books!",
+                    winnerSeat,
+                    default,
+                    winnerBooks));
+
+                Debug.Log($"[CardGameManager] Go Fish winner: {winnerName} ({winnerBooks} books)");
+            }
+            else if (winners.Count > 1)
+            {
+                int tieBooks = CardGameBuilder.Game.GoFishRules.CountBooks(bookBitmasks[winners[0]]);
+                string winnerNames = string.Join(", ", winners.Select(s => seats[s].PlayerName));
+
+                NotifyGameEventClientRpc(new GameEvent(
+                    $"Game Over! Tie between {winnerNames} with {tieBooks} books each!",
+                    -1,
+                    default,
+                    tieBooks));
+
+                Debug.Log($"[CardGameManager] Go Fish tie: {winnerNames}");
+            }
         }
 
         #endregion
